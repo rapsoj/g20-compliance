@@ -1,0 +1,13 @@
+name: compliance-tool
+title: compliance-tool
+username: g20-utoronto
+account: g20-utoronto
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 9523955
+bundleId: 7508222
+url: https://g20-utoronto.shinyapps.io/compliance-tool/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
+additionalFiles: logo.png

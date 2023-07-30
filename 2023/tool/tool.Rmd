@@ -1,0 +1,334 @@
+---
+title: "G20 Compliance Simulator"
+runtime: shiny
+output:
+  prettydoc::html_pretty:
+    theme: cerulean
+margin-left: 500px
+margin-right: 500px
+resource_files:
+- logo.png
+---
+```{r set-up, echo=FALSE, message=FALSE}
+# Load data manipulation libraries
+library(plyr)
+library(dplyr)
+library(lubridate) 
+
+# Load machine learning libraries
+library(randomForest)
+library(caret)
+
+# Load HTML libraries
+library(kableExtra)
+
+# Read in cleaned compliance data
+df <- read.csv("G20 Dataset with Full Features.csv") %>%
+  # Add names for acronyms
+  mutate(
+    area = ifelse(area == "ICT and Digitization",
+                  "Information and Communications Technology", area),
+    area = ifelse(area == "IFI Reform",
+                  "International Financial Institute Reform", area)
+  )
+
+# Read in model
+model <- readRDS("model.rds")
+
+# Create data frames for auxiliary data
+area_year <- df[!duplicated(df[c("area", "year")]), ] %>%
+  dplyr::select(area, year, commitments, total, min.number,
+                min.closest, min.closest.overall)
+
+area_year_avg <- area_year %>%
+  group_by(area) %>%
+  summarise(
+    commitments.avg = mean(commitments),
+    total.avg = mean(total),
+    min.number.avg = mean(min.number),
+    min.closest.avg = mean(min.closest),
+    min.closest.overall.avg = mean(min.closest.overall))
+
+area_year_avg_0 <- area_year %>%
+  filter(min.number == 0) %>%
+  group_by(area) %>%
+  summarise(
+    min.number.avg_0 = mean(min.number),
+    min.closest.avg_0 = mean(min.closest),
+    min.closest.overall.avg_0 = mean(min.closest.overall))
+
+area_year_avg_1 <- area_year %>%
+  filter(min.number > 0) %>%
+  group_by(area) %>%
+  summarise(
+    min.number.avg_1 = mean(min.number),
+    min.closest.avg_1 = mean(min.closest),
+    min.closest.overall.avg_1 = mean(min.closest.overall))
+
+country_dict <- c(
+  "argentina" = "Argentina", "australia" = "Australia", "brazil" = "Brazil",
+  "canada" = "Canada", "china" = "China", "eu" = "European Union",
+  "france" = "France", "germany" = "Germany", "india" = "India",
+  "indonesia" = "Indonesia", "italy" = "Italy", "japan" = "Japan",
+  "korea" = "Republic of Korea", "mexico" = "Mexico", "russia" = "Russia",
+  "safrica" = "South Africa", "saudi" = "Saudi Arabia", "turkey" = "Türkiye",
+  "uk" = "United Kingdom", "us" = "United States")
+
+country_year <- df[!duplicated(df[c("country", "year")]), ] %>%
+  dplyr::select(country, year, gdp.per.cap, gdp.per.cap.lag,
+                gdp.growth, gdp.growth.lag) %>%
+  mutate(country = country_dict[as.character(country)])
+
+country_year_last <- df[!duplicated(df[c("country", "year")]), ] %>%
+  dplyr::select(country, year, gdp.per.cap, gdp.per.cap.lag,
+                gdp.growth, gdp.growth.lag) %>%
+  mutate(country = country_dict[as.character(country)]) %>%
+  filter(year == max(df$year)) %>%
+  rename(
+    gdp.per.cap.last = gdp.per.cap,
+    gdp.per.cap.lag.last = gdp.per.cap.lag,
+    gdp.growth.last = gdp.growth,
+    gdp.growth.lag.last = gdp.growth.lag) %>%
+  dplyr::select(!year)
+  
+```
+\
+\
+<center>
+![](logo.png){width=25%}
+\
+\
+
+---
+
+Since 2008, G20 members have collectively produced over three thousand commitments to address pressing issues such as global development, climate change, and financial regulation. However, on average, only 54% of these commitments have been met in full. This tool has been produced by the G20 Research Group to estimate the probability that each member nation will fulfill a given commitment made at a G20 summit.
+
+To use the tool, fill out the relevant information in the boxes below and push "Estimate".
+
+---
+\
+```{r input-select, echo=FALSE}
+# Create widget for year
+selectInput(inputId = "year", label = "Year commitment was made:",
+            choices = seq(2008,2030), selected = as.numeric(format(Sys.Date(), "%Y")))
+
+# Create widget for issue-area
+selectInput(inputId = "area", label = "Issue-area of commitment:",
+            choices = c("", sort(unique(df$area))))
+
+# Create widget for host
+selectInput(inputId = "host", label = "Summit host nation:",
+            choices =
+              c("", "Argentina", "Australia", "Brazil", "Canada", "China",
+                "France", "Germany", "India", "Indonesia", "Italy", "Japan",
+                "Republic of Korea", "Mexico", "Russia", "South Africa",
+                "Saudi Arabia", "Türkiye", "United Kingdom", "United States"))
+```
+\
+```{r input-checkbox-ministerial, echo=FALSE}
+# Create widget for ministerial meeting held in year before summit
+checkboxInput(inputId = "ministerial_before", width = "500%",
+              label = "G20 ministers of relevant issue-area met in year before summit")
+
+# Create widget for ministerial meeting held in year after summit
+checkboxInput(inputId = "ministerial_after", width = "500%",
+              label = "G20 ministers of relevant issue-area met in year after summit")
+
+```
+\
+```{r input-checkbox-summit, echo=FALSE}
+# Create widget for mentions other G20 summit
+checkboxInput(inputId = "ref_summit", width = "500%",
+              label = "Commitment references past G20 summit")
+
+# Create widget for mentions of international organization
+checkboxInput(inputId = "ref_intorg", width = "500%",
+              label = "Commitment references an international organization")
+
+```
+\
+```{r input-checkbox-language, echo=FALSE}
+# Create widget for mentions date
+checkboxInput(inputId = "ref_date", width = "500%",
+              label = "Commitment references a specific date")
+
+# Create widget for mentions multi-year time frame
+checkboxInput(inputId = "ref_multiyear", width = "500%",
+              label = "Commitment references a multi-year time frame")
+
+# Create widget for mentions money
+checkboxInput(inputId = "ref_money", width = "500%",
+              label = "Commitment references a spending amount")
+
+# Create widget for binding level
+checkboxInput(inputId = "binding", width = "500%",
+              label = "Commitment uses high binding language")
+```
+\
+```{r estimate, echo=FALSE}
+# Create button to conduct analysis
+actionButton(inputId = "estimate", label = "Estimate")
+```
+
+```{r calculate, echo=FALSE}
+# Create table with relevant inputs for model
+pred_table <- eventReactive(list(
+  input$year, input$area, input$host, input$ministerial_before,
+  input$ministerial_after, input$ref_summit, input$ref_intorg,
+  input$ref_date, input$ref_multiyear, input$ref_money, input$binding), {
+    
+    data.frame(country = 
+                 c("Argentina", "Australia", "Brazil", "Canada", "China",
+                "European Union", "France", "Germany", "India", "Indonesia",
+                "Italy", "Japan", "Republic of Korea", "Mexico", "Russia", "South Africa",
+                "Saudi Arabia", "Türkiye", "United Kingdom", "United States")) %>%
+      
+      mutate(
+        year = as.integer(input$year),
+        area = ifelse(input$area != "", input$area, "Development"),
+        min.before = as.integer(ifelse(input$ministerial_before, 1, 0)),
+        min.after = as.integer(ifelse(input$ministerial_after, 1, 0)),
+        min.any = as.integer(ifelse(min.before + min.after > 0, 1, 0)),
+        summit.ref = as.integer(ifelse(input$ref_summit, 1, 0)),
+        org.ref = as.integer(ifelse(input$ref_intorg, 1, 0)),
+        mentions.date = as.integer(ifelse(input$ref_date, 1, 0)),
+        mentions.multi.year = as.integer(ifelse(input$ref_multiyear, 1, 0)),
+        mentions.money = as.integer(ifelse(input$ref_money, 1, 0)),
+        binding.level = as.integer(ifelse(input$binding, 1, 0)),
+        is.host = as.integer(ifelse(input$host == country, 1, 0)),
+
+        host.argentina = as.integer(ifelse(input$host == "Argentina", 1, 0)),
+        host.australia = as.integer(ifelse(input$host == "Australia", 1, 0)),
+        host.canada = as.integer(ifelse(input$host == "Canada", 1, 0)),
+        host.china = as.integer(ifelse(input$host == "China", 1, 0)),
+        host.france = as.integer(ifelse(input$host == "France", 1, 0)),
+        host.germany = as.integer(ifelse(input$host == "Germany", 1, 0)),
+        host.italy = as.integer(ifelse(input$host == "Italy", 1, 0)),
+        host.japan = as.integer(ifelse(input$host == "Japan", 1, 0)),
+        host.korea = as.integer(ifelse(input$host == "Republic of Korea", 1, 0)),
+        host.mexico = as.integer(ifelse(input$host == "Mexico", 1, 0)),
+        host.russia = as.integer(ifelse(input$host == "Russia", 1, 0)),
+        host.saudi = as.integer(ifelse(input$host == "Saudi Arabia", 1, 0)),
+        host.turkey = as.integer(ifelse(input$host == "Türkiye", 1, 0)),
+        host.uk = as.integer(ifelse(input$host == "United Kingdom", 1, 0)),
+        host.us = as.integer(ifelse(input$host ==  "United States", 1, 0)),
+
+        is.argentina = as.integer(ifelse(country == "Argentina", 1, 0)),
+        is.australia = as.integer(ifelse(country == "Australia", 1, 0)),
+        is.brazil = as.integer(ifelse(country == "Brazil", 1, 0)),
+        is.canada = as.integer(ifelse(country == "Canada", 1, 0)),
+        is.china = as.integer(ifelse(country == "China", 1, 0)),
+        is.eu = as.integer(ifelse(country == "European Union", 1, 0)),
+        is.france = as.integer(ifelse(country == "France", 1, 0)),
+        is.germany = as.integer(ifelse(country == "Germany", 1, 0)),
+        is.india = as.integer(ifelse(country == "India", 1, 0)),
+        is.indonesia = as.integer(ifelse(country == "Indonesia", 1, 0)),
+        is.italy = as.integer(ifelse(country == "Italy", 1, 0)),
+        is.japan = as.integer(ifelse(country == "Japan", 1, 0)),
+        is.korea = as.integer(ifelse(country == "Republic of Korea", 1, 0)),
+        is.mexico = as.integer(ifelse(country == "Mexico", 1, 0)),
+        is.russia = as.integer(ifelse(country == "Russia", 1, 0)),
+        is.safrica = as.integer(ifelse(country == "South Africa", 1, 0)),
+        is.saudi = as.integer(ifelse(country == "Saudi Arabia", 1, 0)),
+        is.turkey = as.integer(ifelse(country == "Türkiye", 1, 0)),
+        is.uk = as.integer(ifelse(country == "United Kingdom", 1, 0)),
+        is.us = as.integer(ifelse(country == "United States", 1, 0)),
+
+        is.climate = as.integer(ifelse(input$area == "Climate Change", 1, 0)),
+        is.crime = as.integer(ifelse(input$area == "Crime and Corruption", 1, 0)),
+        is.dev = as.integer(ifelse(input$area == "Development", 1, 0)),
+        is.energy = as.integer(ifelse(input$area == "Energy", 1, 0)),
+        is.envi = as.integer(ifelse(input$area == "Environment", 1, 0)),
+        is.finreg = as.integer(ifelse(input$area == "Financial Regulation", 1, 0)),
+        is.food = as.integer(ifelse(input$area == "Food and Agriculture", 1, 0)),
+        is.gender = as.integer(ifelse(input$area == "Gender", 1, 0)),
+        is.health = as.integer(ifelse(input$area == "Health", 1, 0)),
+        is.ict = as.integer(ifelse(input$area == "Information and Communications Technology and Digitization", 1, 0)),
+        is.ifi = as.integer(ifelse(input$area == "International Financial Institute Reform", 1, 0)),
+        is.infra = as.integer(ifelse(input$area == "Infrastructure", 1, 0)),
+        is.int = as.integer(ifelse(input$area == "International Cooperation", 1, 0)),
+        is.intcoop = as.integer(ifelse(input$area == "International Cooperation", 1, 0)),
+        is.tax = as.integer(ifelse(input$area == "International Taxation", 1, 0)),
+        is.labor = as.integer(ifelse(input$area == "Labour and Employment", 1, 0)),
+        is.macro = as.integer(ifelse(input$area == "Macroeconomic Policy", 1, 0)),
+        is.migr = as.integer(ifelse(input$area == "Migration and Refugees", 1, 0)),
+        is.terror = as.integer(ifelse(input$area == "Terrorism", 1, 0)),
+        is.trade = as.integer(ifelse(input$area == "Trade", 1, 0)),
+
+        p5 = as.integer(ifelse(country %in% c(
+          "China", "France", "Russia", "United Kingdom", "United States"), 1, 0)),
+        g7 = as.integer(ifelse(country %in% c(
+          "Canada", "France", "Germany", "Italy", "Japan", "United Kingdom",
+          "United States", "European Union"), 1, 0)),
+        g7 = as.integer(ifelse(country == "Russia" & year < 2014, 1, 0)),
+        brics = as.integer(ifelse(country %in% c(
+          "Brazil", "China", "India", "Russia", "South Africa"), 1, 0)),
+        oecd = as.integer(ifelse(country %in% c(
+          "Australia", "Canada", "France", "Germany", "Italy", "Japan",
+          "Republic of Korea", "Mexico", "Türkiye", "United Kingdom",
+          "United States", "European Union"), 1, 0)),
+        imf_economy = as.integer(ifelse(country %in% c(
+          "Australia", "Canada", "France", "Germany", "Italy", "Japan",
+          "Republic of Korea", "United Kingdom", "United States",
+          "European Union"), 1, 0))) %>%
+
+      left_join(area_year, by = c("area", "year")) %>%
+      left_join(area_year_avg, by = "area") %>%
+      left_join(area_year_avg_0, by = "area") %>%
+      left_join(area_year_avg_1, by = "area") %>%
+
+      mutate(
+        commitments = ifelse(year > max(df$year), commitments.avg, commitments),
+        commitments2 = commitments ** 2,
+        total = ifelse(year > max(df$year), total.avg, commitments),
+        min.number = ifelse(year > max(df$year) & min.any == 1, min.number.avg_1, min.number),
+        min.number = ifelse(year > max(df$year) & min.any == 0, min.number.avg_0, min.number),
+        min.number = ifelse(is.na(min.number) & min.any == 1, 1, min.number),
+        min.number = ifelse(is.na(min.number) & min.any == 0, 0, min.number),
+        min.closest = ifelse(year > max(df$year) & min.any == 1, min.closest.avg_1, min.closest),
+        min.closest = ifelse(
+          is.na(min.closest) & min.any == 1,
+          mean(area_year[area_year$min.number > 0,]$min.closest), min.closest),
+        min.closest = ifelse(year > max(df$year) & min.any == 0, 10000, min.closest),
+        min.closest.overall = ifelse(year > max(df$year) & min.any == 1, min.closest, min.closest.overall),
+        min.closest.overall = ifelse(year > max(df$year) & min.any == 0, min.closest.avg_0, min.closest.overall),
+        min.closest.overall = ifelse(
+          is.na(min.closest.overall) & min.any == 1,
+          mean(area_year[area_year$min.closest.overall > 0,]$min.closest.overall), min.closest.overall),
+         min.closest.overall = ifelse(
+          is.na(min.closest.overall) & min.any == 0,
+          mean(area_year[area_year$min.closest.overall == 0,]$min.closest.overall), min.closest.overall)) %>%
+
+      left_join(country_year, by = c("country", "year")) %>%
+      left_join(country_year_last, by = "country") %>%
+
+      mutate(
+        gdp.per.cap = ifelse(year > max(df$year), gdp.per.cap.last, gdp.per.cap),
+        gdp.per.cap.lag = ifelse(year > max(df$year), gdp.per.cap.lag.last, gdp.per.cap.lag),
+        gdp.growth = ifelse(year > max(df$year), gdp.growth.last, gdp.growth),
+        gdp.growth.lag = ifelse(year > max(df$year), gdp.growth.lag.last, gdp.growth.lag))
+})
+
+# Predict compliance probabilities using pre-trained model
+results <- eventReactive(list(
+  input$year, input$area, input$host, input$ministerial_before,
+  input$ministerial_after, input$ref_summit, input$ref_intorg,
+  input$ref_date, input$ref_multiyear, input$ref_money, input$binding), {
+    pred_table()[c("country")] %>%
+      mutate(
+        pred = paste0(format(round(predict(
+          model, pred_table(), type = "prob")[,2] * 100, 1), nsmall = 1), "%"),
+        flag = c("🇦🇷", "🇦🇺", "🇧🇷", "🇨🇦", "🇨🇳", "🇪🇺", "🇫🇷",
+                 "🇩🇪", "🇮🇳", "🇮🇩", "🇮🇹", "🇯🇵", "🇰🇷", "🇲🇽",
+                 "🇷🇺", "🇿🇦", "🇸🇦", "🇹🇷", "🇬🇧", "🇺🇸")) %>%
+      relocate(flag)
+})
+
+# Show results when "Estimate" button is selected
+conditionalPanel(
+  condition = "input.estimate > 0",
+  h2("Probability of Compliance:"),
+  renderTable(results(), colnames = FALSE))
+```
+
+</center>
