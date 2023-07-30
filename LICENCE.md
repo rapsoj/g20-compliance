@@ -3,4 +3,4 @@ The G20 Compliance Simulator is licenced under a [Creative Commons Attribution-N
 !(image)[https://static01.bbi.io/2Wt9Tk.gif]
 
 
-!(image)[[https://static01.bbi.io/2Wt9Tk.gif](https://imgur.com/a/TuIAMD6)https://imgur.com/a/TuIAMD6]
+!(image)[http://i.imgur.com/zTONrOD.jpg]
