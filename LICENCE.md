@@ -5,4 +5,5 @@ The G20 Compliance Simulator is licenced under a [Creative Commons Attribution-N
 
 !(image)[http://i.imgur.com/zTONrOD.jpg]
 
-!(test)[https://imgur.com/a/TuIAMD6]
+!(test)[https://imgur.com/a/TuIAMD6.jpg]
+![ScreenShot](https://raw.githubusercontent.com/i-saumitra/Voice-controlled-MP3-Player/master/screenshot.jpg)
